@@ -1,15 +1,20 @@
-import json
-from fastapi import FastAPI, Request, status, HTTPException
-from fastapi.responses import JSONResponse
+from typing import Optional
+from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel
+from pymongo import MongoClient, ReturnDocument
+from passlib.context import CryptContext
 import os
+from fastapi.middleware.cors import CORSMiddleware 
+
 import requests
-from pymongo import MongoClient
-from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Enable CORS (Cross-Origin Resource Sharing)
+# origins = [
+#     "http://localhost:3000",  # Add the domains you want to allow
+#     "http://localhost:8080",  # You can also use '*' to allow all domains
+# ]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,129 +22,156 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Define environment variables
-CLIENT_ID = os.environ.get("CLIENT_ID")
-CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
-REDIRECT_URI = os.environ.get("REDIRECT_URI")
+# MongoDB client initialization
+
 CLIENT = os.environ.get("CLIENT")
+print("Connecting to MongoDB with URI:", CLIENT)  # Add this line to debug
 
-# Connect to MongoDB
 client = MongoClient(CLIENT)
-db = client['MadCampWeek2']
+db = client['MadCampWeek3']
 collection_User = db['User']
 collection_Info = db['Info']
+collection_Group = db['Group']
 
+# Models
+class LoginModel(BaseModel):
+    id: str
+    password: str
 
-class TokenResponse(BaseModel):
-    access_token: str
-
-class UserInfo(BaseModel):
-    user_id: str
-    nickname: str
-    profile_image: str
-
-@app.post("/oauth", response_model=UserInfo)
-async def oauth_api(authorization_code: str):
-    if not authorization_code:
-        raise HTTPException(status_code=400, detail="Authorization code is required")
-
-    token_url = 'https://kauth.kakao.com/oauth/token'
-    
-    payload = {
-        'grant_type': 'authorization_code',
-        'client_id': CLIENT_ID,
-        'redirect_uri': REDIRECT_URI,
-        'code': authorization_code,
-    }
-    if CLIENT_SECRET:
-        payload['client_secret'] = CLIENT_SECRET
-    
-    try:
-        token_response = requests.post(token_url, data=payload)
-        token_response.raise_for_status()
-        token_data = token_response.json()
-        access_token = token_data.get('access_token')
-
-        if not access_token:
-            raise HTTPException(status_code=400, detail="Access token not found")
-
-        # Fetch User Information
-        user_info_url = 'https://kapi.kakao.com/v2/user/me'
-        headers = {
-            'Authorization': f'Bearer {access_token}'
-        }
-        user_response = requests.get(user_info_url, headers=headers)
-        user_response.raise_for_status()
-        user_info = user_response.json()
-
-        user_id_str = str(user_info.get('id'))
-
-        existing_user = collection_User.find_one({"user_id": user_id_str})
-        if existing_user:
-            # Fetch the user's goal data from collection_Goal
-            # user_goals = collection_Goal.find_one({"user_id": user_id_str})
-            # if user_goals:
-            #     # Remove the '_id' field from the user_goals if it exists
-            #     user_goals.pop('_id', None)
-
-            # Extract nickname and profile_image from existing_user
-            nickname = existing_user.get('nickname')
-            profile_image = existing_user.get('profile_image')
-
-            # Construct the user_data response
-            user_data = {
-                "user_id": user_id_str,
-                "nickname": nickname,
-                "profile_image": profile_image,
-            }
-
-            return user_data
-
-        else:
-            user_nickname = user_info['kakao_account']['profile']['nickname']
-            user_profile_image = user_info['kakao_account']['profile']['profile_image_url']
-
-            # Prepare the document to insert into MongoDB
-            new_user_document = {
-                "user_id": user_id_str,
-                "nickname": user_nickname,
-                "profile_image": user_profile_image
-            }
-            
-            # Insert User Information into MongoDB
-            collection_User.insert_one(new_user_document)
-            
-            return new_user_document
-    
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
-class UpdateUserInfo(BaseModel):
-    user_id: str
+class SignupModel(BaseModel):
+    id: str
     bj_id: str
-    new_nickname: str
+    nickname: str
+    password: str
 
+class CheckIdModel(BaseModel):
+    id: str
 
-@app.post("/info")
-async def update_user_info(update_info: UpdateUserInfo):
-    # 사용자 문서를 user_id를 기준으로 찾기
-    user_document = collection_User.find_one({"user_id": update_info.user_id})
-    
-    if user_document:
-        # 사용자 문서에 bj_id와 new_nickname 추가/업데이트
-        collection_User.update_one(
-            {"user_id": update_info.user_id},
-            {"$set": {"bj_id": update_info.bj_id, "nickname": update_info.new_nickname}}
-        )
-        message = "User info updated successfully"
+class SuccessModel(BaseModel):
+    success: bool
+    message: Optional[str] = None
+
+class ExistModel(BaseModel):
+    exist: bool
+
+# Endpoints
+@app.post('/login', response_model=SuccessModel)
+async def login(login_data: LoginModel):
+    user = collection_User.find_one({"id": login_data.id})
+    if user and pwd_context.verify(login_data.password, user['password']):
+        return SuccessModel(success=True, message="Login successful.")
     else:
-        # user_id가 데이터베이스에 없다면 에러 반환
-        raise HTTPException(status_code=404, detail="User not found")
+        return SuccessModel(success=False, message="Incorrect ID or password.")
     
-    return {"message": message}
 
+@app.post('/signup_id', response_model=ExistModel)
+async def check_id(check_id_data: CheckIdModel):
+    exist = collection_User.find_one({"id": check_id_data.id}) is not None
+    return ExistModel(exist=exist)
 
+# @app.post('/signup', response_model=SuccessModel)
+# async def signup(signup_data: SignupModel):
+#     # Check if the user ID already exists
+#     if collection_User.find_one({"id": signup_data.id}):
+#         return SuccessModel(success=False, message="ID already exists.")
 
+#     # Hash the password
+#     hashed_password = pwd_context.hash(signup_data.password)
 
+#     # User data for collection_User
+#     user_data = {
+#         "id": signup_data.id,
+#         "bj_id": signup_data.bj_id,
+#         "nickname": signup_data.nickname,
+#         "password": hashed_password
+#     }
+
+#     # Insert user data into User collection
+#     collection_User.insert_one(user_data)
+
+#     # Fetch additional user information from the external API
+#     response = requests.get(f'https://solved.ac/api/v3/user/show?handle={signup_data.bj_id}')
+#     if response.status_code == 200:
+#         additional_user_data = response.json()
+
+#         # Combine the fetched data with bj_id and nickname
+#         info_data = {
+#             **additional_user_data,
+#             "bj_id": signup_data.bj_id,
+#             "nickname": signup_data.nickname
+#         }
+
+#         # Insert or update the additional user data in Info collection
+#         collection_Info.find_one_and_update(
+#             {"bj_id": signup_data.bj_id},
+#             {"$set": info_data},
+#             upsert=True
+#         )
+
+#         return SuccessModel(success=True, message="User created successfully and additional info stored.")
+#     else:
+#         # If the external API call fails
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail="Failed to fetch additional user data from solved.ac"
+#         )
+
+@app.post('/signup', response_model=SuccessModel)
+async def signup(signup_data: SignupModel):
+    # Check if the user ID already exists
+    # if collection_User.find_one({"id": signup_data.id}):
+    #     return SuccessModel(success=False, message="ID already exists.")
+
+    # Hash the password
+    hashed_password = pwd_context.hash(signup_data.password)
+
+    # User data for collection_User
+    user_data = {
+        "id": signup_data.id,
+        "bj_id": signup_data.bj_id,
+        "nickname": signup_data.nickname,
+        "password": hashed_password
+    }
+
+    # Insert user data into User collection
+    collection_User.insert_one(user_data)
+
+    # Fetch additional user information from the external API
+    response = requests.get(f'https://solved.ac/api/v3/user/show?handle={signup_data.bj_id}')
+    if response.status_code == 200:
+        additional_user_data = response.json()
+
+        # Combine the fetched data with bj_id and nickname
+        info_data = {
+            **additional_user_data,
+            "bj_id": signup_data.bj_id,
+            "nickname": signup_data.nickname
+        }
+
+        # Insert or update the additional user data in Info collection
+        collection_Info.find_one_and_update(
+            {"bj_id": signup_data.bj_id},
+            {"$set": info_data},
+            upsert=True
+        )
+        updated_group = collection_Group.find_one_and_update(
+        {"group_name": "default"},
+        {"$addToSet": {"members": signup_data.nickname}},  # Use $addToSet to add unique value to array
+        return_document=ReturnDocument.AFTER
+    )
+
+    # Check if the group update was successful
+    if updated_group:
+        return SuccessModel(success=True, message="User created successfully and added to the default group.")
+    else:
+        # If the external API call fails
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch additional user data from solved.ac"
+        )
     
+
+
