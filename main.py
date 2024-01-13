@@ -1,5 +1,5 @@
 from typing import List
-from typing import Optional
+from typing import Optional, Any, Dict
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from pymongo import MongoClient, ReturnDocument
@@ -7,6 +7,8 @@ from passlib.context import CryptContext
 import os
 from fastapi.middleware.cors import CORSMiddleware 
 import httpx
+from bson import ObjectId
+from fastapi.encoders import jsonable_encoder
 
 import requests
 
@@ -133,7 +135,7 @@ async def signup(signup_data: SignupModel):
         )
         updated_group = collection_Group.find_one_and_update(
         {"group_name": "default"},
-        {"$addToSet": {"members": signup_data.nickname}},  # Use $addToSet to add unique value to array
+        {"$addToSet": {"members": signup_data.id}},  # Use $addToSet to add unique value to array
         return_document=ReturnDocument.AFTER
     )
 
@@ -147,14 +149,26 @@ async def signup(signup_data: SignupModel):
             detail="Failed to fetch additional user data from solved.ac"
         )
     
-@app.post('/login', response_model=SuccessModel)
+class LoginSuccessModel(SuccessModel):
+    userinfo: Optional[Any] = None
+
+    class Config:
+        arbitrary_types_allowed = True
+
+@app.post('/login', response_model=LoginSuccessModel)
 async def login(login_data: LoginModel):
     user = collection_User.find_one({"id": login_data.id})
     if user and pwd_context.verify(login_data.password, user['password']):
-        return SuccessModel(success=True, message="Login successful.")
+        # Fetch user information from collection_Info
+        user_info = collection_Info.find_one({"id": login_data.id})
+        if user_info:
+            # Optionally remove the MongoDB '_id' field
+            user_info.pop('_id', None)
+            return LoginSuccessModel(success=True, message="Login successful.", userinfo=user_info)
+        else:
+            return LoginSuccessModel(success=False, message="User info not found.")
     else:
-        return SuccessModel(success=False, message="Incorrect ID or password.")
-    
+        return LoginSuccessModel(success=False, message="Incorrect ID or password.")
 
 
 class GroupRequestModel(BaseModel):
@@ -196,3 +210,78 @@ async def get_group_info(group_request: GroupRequestModel):
     return GroupResponseModel(members=member_infos)
 
 
+
+
+class UserIdModel(BaseModel):
+    id: str
+
+@app.post('/userInfo', response_model=Dict[str, Any])
+async def user_info(user_id_data: UserIdModel):
+    user_info = collection_Info.find_one({"id": user_id_data.id})
+    
+    if user_info:
+        # Optionally remove the MongoDB '_id' field
+        user_info.pop('_id', None)
+        return user_info
+    else:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+
+class GroupActionModel(BaseModel):
+    id: str
+    group_name: str
+
+def convert_objectid_to_string(value):
+    if isinstance(value, ObjectId):
+        return str(value)
+    elif isinstance(value, dict):
+        for key in value:
+            value[key] = convert_objectid_to_string(value[key])
+    elif isinstance(value, list):
+        value = [convert_objectid_to_string(item) for item in value]
+    return value
+
+
+@app.post('/group/join')
+async def join_group(data: GroupActionModel):
+    group = collection_Group.find_one({"group_name": data.group_name})
+    if group:
+        # Check if the id is already in the group
+        if data.id in group['members']:
+            return {"message": "User already in the group"}
+
+        # Add the id to the group
+        result = collection_Group.find_one_and_update(
+            {"group_name": data.group_name},
+            {"$push": {"members": data.id}},
+            return_document=ReturnDocument.AFTER
+        
+        )
+        if result:
+            result = convert_objectid_to_string(result)
+            return jsonable_encoder(result)
+        return {"message": "User added to the group", "group": result}
+    else:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+
+@app.delete('/group/leave')
+async def leave_group(data: GroupActionModel):
+    group = collection_Group.find_one({"group_name": data.group_name})
+    if group:
+        # Check if the id is in the group
+        if data.id not in group['members']:
+            return {"message": "User not in the group"}
+
+        # Remove the id from the group
+        result = collection_Group.find_one_and_update(
+            {"group_name": data.group_name},
+            {"$pull": {"members": data.id}},
+            return_document=ReturnDocument.AFTER
+        )
+        if result:
+        # Apply the ObjectId conversion
+            result = convert_objectid_to_string(result)
+            return jsonable_encoder(result)
+        return {"message": "User removed from the group", "group": result}
+    else:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
