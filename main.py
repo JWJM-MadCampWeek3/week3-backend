@@ -1,12 +1,11 @@
 from typing import List
 from typing import Optional, Any, Dict
-from fastapi import FastAPI, HTTPException, Request, Response, status, websockets
+from fastapi import Body, FastAPI, HTTPException, Request, Response, status, websockets , APIRouter
 from pydantic import BaseModel, Field
 from pymongo import MongoClient, ReturnDocument
 from passlib.context import CryptContext
 import os
 from fastapi.middleware.cors import CORSMiddleware 
-import httpx
 from bson import ObjectId
 from fastapi.encoders import jsonable_encoder
 
@@ -14,10 +13,6 @@ import requests
 
 app = FastAPI()
 
-# origins = [
-#     "http://localhost:3000",  # Add the domains you want to allow
-#     "http://localhost:8080",  # You can also use '*' to allow all domains
-# ]
 
 app.add_middleware(
     CORSMiddleware,
@@ -287,15 +282,7 @@ class GroupModel(BaseModel):
     # password: str  # Note: Returning passwords is generally a bad practice
     group_bio: str
     members: List[str]
-class SafeGroupModel(BaseModel):
-    group_name: str
-    manager_id: str
-    goal_time: int
-    goal_number: int
-    tier: int
-    is_secret: bool # Note: Returning passwords is generally a bad practice
-    group_bio: str
-    members: List[str]
+
 # Utility function to get the full group info
 async def get_full_group_info(group_name: str) -> GroupModel:
     group = collection_Group.find_one({"group_name": group_name})
@@ -354,46 +341,6 @@ async def leave_group(data: GroupActionModel):
     # User is not a member of the group, so raise an error
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not in the group")
 
-# @app.post('/group/join', response_model=GroupModel)
-# async def join_group(data: GroupActionModel):
-#     group = collection_Group.find_one({"group_name": data.group_name})
-#     if not group:
-#         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    
-#     if data.id in group['members']:
-#         return await get_full_group_info(data.group_name)  # Return full group info even if the user is already a member
-
-#     result = collection_Group.find_one_and_update(
-#         {"group_name": data.group_name},
-#         {"$push": {"members": data.id}},
-#         return_document=ReturnDocument.AFTER
-#     )
-
-#     if result:
-#         return await get_full_group_info(data.group_name)  # Return full group info after joining
-#     else:
-#         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error adding user to group")
-
-# @app.delete('/group/leave', response_model=GroupModel)
-# async def leave_group(data: GroupActionModel):
-#     group = collection_Group.find_one({"group_name": data.group_name})
-#     if not group:
-#         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-
-#     if data.id not in group['members']:
-#         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not in the group")
-
-#     result = collection_Group.find_one_and_update(
-#         {"group_name": data.group_name},
-#         {"$pull": {"members": data.id}},
-#         return_document=ReturnDocument.AFTER
-#     )
-
-#     if result:
-#         return await get_full_group_info(data.group_name)  # Return full group info after leaving
-#     else:
-#         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error removing user from group")
-# # Define the request model for the group creation
 class GroupCreateModel(BaseModel):
     group_name: str
     manager_id: str
@@ -439,3 +386,56 @@ async def create_group(group_data: GroupCreateModel):
         return SuccessModel(success=True, message="New group created successfully and manager updated.")
     else:
         return SuccessModel(success=False, message="Group created but manager update failed.")
+    
+
+class GroupUpdateModel(BaseModel):
+    group_name: str
+    goal_time: int
+    goal_number: int
+    is_secret: bool
+    password: str
+    group_bio: str
+
+# Endpoint to update group information
+@app.post('/group/update', response_model=SuccessModel)
+async def update_group(group_update_data: GroupUpdateModel):
+    # Find the group by group_name
+    group = collection_Group.find_one({"group_name": group_update_data.group_name})
+    if not group:
+        return SuccessModel(success=False, message="Group not found.")
+
+    # Hash the password if it's not empty
+    hashed_password = pwd_context.hash(group_update_data.password) if group_update_data.password else group.get('password')
+
+    # Prepare the updated group data
+    update_data = {
+        "goal_time": group_update_data.goal_time,
+        "goal_number": group_update_data.goal_number,
+        "is_secret": group_update_data.is_secret,
+        "password": hashed_password,
+        "group_bio": group_update_data.group_bio
+    }
+        
+    result = collection_Group.update_one(
+    {"group_name": group_update_data.group_name},
+    {"$set": update_data}
+    )
+
+    if result.matched_count == 1:
+        if result.modified_count == 0:
+            message = "No changes were made to the group."
+        else:
+            message = "Group updated successfully."
+        return SuccessModel(success=True, message=message)
+    else:
+        return SuccessModel(success=False, message="Update failed.")
+    
+@app.post('/group_info', response_model=GroupModel)
+async def get_group_info(group_name: str = Body(..., embed=True)):
+    group_document = collection_Group.find_one({"group_name": group_name})
+    if group_document:
+        group_document.pop('_id')  # Remove the MongoDB generated ID
+        group_document.pop('password', None)  # Do not return the password
+        return GroupModel(**group_document)
+    else:
+        raise HTTPException(status_code=404, detail="Group not found")
