@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from pymongo import MongoClient
 import socketio
 from fastapi import FastAPI, WebSocket
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # FastAPI app and APIRouter initialization
 timer = APIRouter(prefix="/timer")
@@ -57,7 +58,9 @@ class TimerDataModel(BaseModel):
 
 class MemberTimerInfoModel(BaseModel):
     id: str
+    nickname : str
     total: int
+    isStudy : bool
     recent: dict[str, int]  # or a more specific type if you have one
     dates: list[TimerDataModel]
 
@@ -67,6 +70,17 @@ class TimerGroupRequestModel(BaseModel):
 
 class TimerGroupResponseModel(BaseModel):
     members: list[MemberTimerInfoModel]
+
+
+def get_duration(date_info, request_date):
+    # Check if 'date' and 'duration' keys exist in the date_info dictionary
+    if 'date' in date_info and 'duration' in date_info:
+        # Compare the date_info date with the requested date and return the duration if they match
+        if date_info['date'] == request_date:
+            # Ensure 'duration' is an integer
+            return int(date_info['duration'])
+    # Return 0 as a default value if there is no match or the keys don't exist
+    return 0
 
 @timer.post('/group', response_model=TimerGroupResponseModel)
 async def get_timer_info_for_group(timer_group_request: TimerGroupRequestModel):
@@ -81,28 +95,32 @@ async def get_timer_info_for_group(timer_group_request: TimerGroupRequestModel):
     # Get timer info for each member for the specified date
     member_timer_infos = []
     for member_id in member_ids:
-        # Query the timer data for each member and the specified date
         timer_data = collection_Timer.find_one({"id": member_id, "dates.date": timer_group_request.date})
         if timer_data:
-            # Extract only the relevant date's data
-            dates_info = [date_info for date_info in timer_data.get('dates', []) if date_info['date'] == timer_group_request.date]
+            dates_info = [
+                {
+                    "date": date_info['date'],
+                    "duration": date_info['duration']
+                }
+                for date_info in timer_data.get('dates', [])
+                if date_info['date'] == timer_group_request.date
+            ]
+
+            is_study = timer_data.get('isStudy', False)
+            nickname_ = timer_data["nickname"]  # Get isStudy status
 
             # Handle the recent field
-            # If 'recent' is a Timestamp, convert to your preferred format, here is an example converting to a string
             recent = timer_data.get('recent')
-            if isinstance(recent, Timestamp):
-                # Convert MongoDB Timestamp to Unix timestamp
-                recent_dict = {"timestamp": recent.time}
-            else:
-                recent_dict = {}
-  # Assuming 'recent' has a 'timestamp()' method
+            recent_dict = {"timestamp": recent.time} if isinstance(recent, Timestamp) else {}
 
             # Create the MemberTimerInfoModel object
             member_timer_info = MemberTimerInfoModel(
                 id=member_id,
                 total=timer_data.get('total', 0),
                 recent=recent_dict,
-                dates=dates_info
+                dates=dates_info,
+                isStudy=is_study,
+                nickname=nickname_ # Include isStudy status
             )
             member_timer_infos.append(member_timer_info)
 
@@ -110,7 +128,14 @@ async def get_timer_info_for_group(timer_group_request: TimerGroupRequestModel):
 
 
 
-# Setup Socket.IO within the timer router
+
+
+
+
+
+
+
+
 # timer_sio = socketio.AsyncServer(cors_allowed_origins='*')
 # timer_socket_app = socketio.ASGIApp(timer_sio)
 

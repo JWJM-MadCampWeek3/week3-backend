@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime
 from typing import List
 from typing import Optional, Any, Dict
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, status, websockets , APIRouter
@@ -11,6 +11,7 @@ from bson import ObjectId
 from fastapi.encoders import jsonable_encoder
 from routers.group import group
 from routers.timer import timer
+from routers.rank import rank
 import requests
 import socketio
 
@@ -33,6 +34,7 @@ app.add_middleware(
 
 app.include_router(group)
 app.include_router(timer)
+app.include_router(rank)
 # app.include_router(
 #     timer,
 #     prefix="/timer",
@@ -138,6 +140,7 @@ async def signup(signup_data: SignupModel):
 
     timer_data = {
     "id": signup_data.id,
+    "nickname" : signup_data.nickname,
     "isStudy" : False,
     "recent" : None,
     "total" : 0,
@@ -326,115 +329,153 @@ class GroupUpdateModel(BaseModel):
     password: str
     group_bio: str
 
-# WebSocket connection manager
-# class ConnectionManager:
-#     def __init__(self):
-#         self.active_connections = {}
 
-#     async def connect(self, websocket: WebSocket, user_id: str):
-#         await websocket.accept()
-#         self.active_connections[user_id] = websocket
-
-#     def disconnect(self, user_id: str):
-#         if user_id in self.active_connections:
-#             del self.active_connections[user_id]
-
-#     async def send_personal_message(self, message: str, user_id: str):
-#         if user_id in self.active_connections:
-#             websocket = self.active_connections[user_id]
-#             await websocket.send_text(message)
-
-# manager = ConnectionManager()
-
-# # WebSocket route for /ws
-# @app.websocket("/ws/{user_id}")
-# async def websocket_endpoint(websocket: WebSocket, user_id: str):
-#     await manager.connect(websocket, user_id)
-#     try:
-#         while True:
-#             data = await websocket.receive_text()
-#             action = data['action']
-#             # Timer action logic here
-#             # Use manager.send_personal_message to communicate back
-#     except WebSocketDisconnect:
-#         manager.disconnect(user_id)
-
-# # Timer action logic (modified for WebSocket)
-# async def timer_action(user_id, action):
-#     if action == 'start':
-#         # Start timer logic
-#         await manager.send_personal_message('Timer started', user_id)
-#     elif action == 'stop':
-#         # Stop timer logic
-#         await manager.send_personal_message('Timer stopped', user_id)
+class StartTimerRequest(BaseModel):
+    id: str
+    date : str
 
 
+@app.post("/start")
+async def start_timer(request_data: StartTimerRequest):
+    user_id = request_data.id
+    date = request_data.date
 
-timer_sio = socketio.AsyncServer(cors_allowed_origins="*", async_mode = 'asgi') 
-timer_socket_app = socketio.ASGIApp(timer_sio)
-app.mount("/socket.io", timer_socket_app)
 
-# Define Socket.IO event handlers
-@timer_sio.event
-async def connect(sid, environ):
-    print("Client connected", sid)
-
-@timer_sio.event
-async def disconnect(sid):
-    print("Client disconnected", sid)
-
-@timer_sio.event
-async def timer_action(sid, data):
-    user_id = data['id']
-    action = data['action']
-
-    if action == 'start':
-        await collection_Timer.update_one(
-            {"id": user_id},
-            {"$set": {"isStudy": True, "recent": datetime.utcnow()}}
-        )
-        await timer_sio.emit('timer_started', {'id': user_id}, to=sid)
-
-    elif action == 'stop':
-        timer_data = await collection_Timer.find_one({"id": user_id})
-        if timer_data:
-            previous_recent = timer_data.get("recent", datetime.utcnow())
-            existing_duration = timer_data.get("duration", 0)  # Get the existing duration
-        else:
-            previous_recent = datetime.utcnow()
-            existing_duration = 0  # Default to 0 if no timer data found
-
-        # Calculate the time difference
-        time_difference = datetime.utcnow() - previous_recent
-
-        # Add the time difference to the existing duration
-        new_duration = existing_duration + time_difference.total_seconds()
-
-        # Update the user's 'isStudy' status and duration
-        await collection_Timer.update_one(
-            {"id": user_id},
-            {
-                "$set": {
-                    "isStudy": False,
-                    "recent": datetime.utcnow(),
-                    "duration": new_duration  # Update duration with the new calculated value
-                }
+    # Update the isStudy status and recent timestamp
+    update_result = collection_Timer.update_one(
+        {"id": user_id},
+        {
+            "$set": {
+                "isStudy": True,
+                "recent": datetime.utcnow()
             }
+        }
+    )
+
+    # Check if the update was successful
+    if update_result.modified_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No timer found for user ID {user_id}."
         )
-        await timer_sio.emit('timer_stopped', {'id': user_id}, to=sid)
+
+    # Retrieve the duration for the set date
+    timer_data = collection_Timer.find_one(
+        {"id": user_id, "dates.date": date},
+        {"dates.$": 1}
+    )
+
+    # Check if the date was found
+    if not timer_data or "dates" not in timer_data or len(timer_data["dates"]) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No duration found for user ID {user_id} on date {date}."
+        )
+
+    # Extract the duration for the response
+    duration = timer_data["dates"][0]["duration"]
+
+    return {"duration": duration}
 
 
+class StopTimerRequest(BaseModel):
+    id: str
+    date: str  # Assuming you want to use this date to
+
+@app.post("/stop")
+async def stop_timer(request_data: StopTimerRequest):
+    user_id = request_data.id
+    date = request_data.date
+
+    
+    # Retrieve the current timer data
+    timer_data = collection_Timer.find_one(
+        {"id": user_id, "dates.date": date}
+    )
+
+    if not timer_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No timer found for user ID {user_id}."
+        )
+
+    # Find the index of the date entry to update
+    date_entry_index = next(
+        (index for (index, d) in enumerate
+    (timer_data["dates"]) if d["date"] == date), None)
+
+    # If there's no matching date entry, raise an exception
+    if date_entry_index is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No duration entry found for user ID {user_id} on date {date}."
+        )
+
+    # Calculate the time difference
+    previous_recent = timer_data["recent"] if "recent" in timer_data else datetime.utcnow()
+    time_difference = datetime.utcnow() - previous_recent
+
+    # Update the user's 'isStudy' status, the 'recent' timestamp, and increment the duration
+    update_result = collection_Timer.update_one(
+        {"id": user_id},
+        {
+            "$set": {
+                f"dates.{date_entry_index}.duration": timer_data["dates"][date_entry_index]["duration"] + int(time_difference.total_seconds()),
+                "isStudy": False,
+                "recent": datetime.utcnow()
+            }
+        }
+    )
+
+    # Check if the update was successful
+    if update_result.modified_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Failed to update timer for user ID {user_id}."
+        )
+
+    # Return the updated duration
+    updated_duration = timer_data["dates"][date_entry_index]["duration"] + int(time_difference.total_seconds())
+    return {"id": user_id, "date": date, "duration": updated_duration}
+
+class Problem(BaseModel):
+    id: str
+    problem: str
 
 
+@app.post("/user/problem/insert")
+async def add_problem_to_user(problem: Problem):
+    user_id = problem.id
+    user_problem = problem.problem
 
+    # Check if the user exists in the collection.
+    user = collection_Info.find_one({"id": user_id})
+    if user:
+        # Check if the problem already exists for the user.
+        if user_problem not in user.get('problems', []):
+            collection_Info.update_one({"id": user_id}, {"$push": {"problems": user_problem}})
+            return {"message": "Problem added to the user."}
+        else:
+            raise HTTPException(status_code=400, detail="Problem already exists for the user.")
+    else:
+        # If the user does not exist, create a new entry.
+        await collection_Info.insert_one({"id": user_id, "problems": [user_problem]})
+        return {"message": "User created and problem added."}
+    
+@app.delete("/user/problem/delete")
+async def delete_problem_from_user(problem_data: Problem):
+    user_id = problem_data.id
+    problem_to_delete = problem_data.problem
 
-
-# Create WebSocket route for /timer
-# @app.websocket("/ws")
-# async def websocket_endpoint(websocket: WebSocket):
-#     await websocket.accept()
-#     while True:
-#         data = await websocket.receive_text()
-#         await websocket.send_text(f"Message text was: {data}")
-
-
+    # Check if the user exists in the collection.
+    user = collection_Info.find_one({"id": user_id})
+    if user:
+        # Check if the problem exists in the user's problems.
+        if problem_to_delete in user.get('problems', []):
+            collection_Info.update_one({"id": user_id}, {"$pull": {"problems": problem_to_delete}})
+            return {"message": "Problem deleted from the user."}
+        else:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Problem not found in the user.")
+    else:
+        # If the user does not exist, raise an error.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")

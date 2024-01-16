@@ -290,5 +290,47 @@ async def get_group_info(group_name: str = Body(..., embed=True)):
         return GroupModel(**group_document)
     else:
         raise HTTPException(status_code=404, detail="Group not found")
+class GroupProblem(BaseModel):
+    group_name: str
+    problem: str 
+
+@group.post("/problem/insert")
+async def add_problem_to_group(group_problem: GroupProblem):
+    group_name = group_problem.group_name
+    problem = group_problem.problem
+
+    # Check if the group exists in the collection.
+    group = collection_Group.find_one({"group_name": group_name})
+    if group:
+        # Check if the problem already exists in the group's problems.
+        if problem not in group.get('problems', []):
+            collection_Group.update_one({"group_name": group_name}, {"$push": {"problems": problem}})
+            return {"message": "Problem added to the group."}
+        else:
+            raise HTTPException(status_code=400, detail="Problem already exists in the group.")
+    else:
+        # If the group does not exist, raise an error (or you could choose to create it)
+        raise HTTPException(status_code=404, detail="Group not found.")
     
 
+
+
+@group.delete("/problem/delete")
+async def delete_problem_from_group(group_problem: GroupProblem):
+    group_name = group_problem.group_name
+    problem = group_problem.problem
+
+
+    # Check if the group exists in the collection.
+    group = collection_Group.find_one({"group_name": group_name})
+    if group:
+        # Check if the problem exists in the group's problems.
+        if problem in group.get('problems', []):
+            collection_Group.update_one({"group_name": group_name}, {"$pull": {"problems": problem}})
+            return {"message": "Problem deleted from the group."}
+        else:
+            raise HTTPException(status_code=404, detail="Problem not found in the group.")
+    else:
+        # If the group does not exist, raise an error.
+    
+        raise HTTPException(status_code=404, detail="Group not found.")
