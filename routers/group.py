@@ -334,3 +334,14 @@ async def delete_problem_from_group(group_problem: GroupProblem):
         # If the group does not exist, raise an error.
     
         raise HTTPException(status_code=404, detail="Group not found.")
+    
+
+@group.get("/list")
+async def get_group_list():
+    # Query the collection_Group to retrieve all group names
+    group_names_cursor = collection_Group.find({}, {"group_name": 1, "_id": 0})
+
+    # Extract the group names from the cursor
+    group_names = [group["group_name"] for group in group_names_cursor]
+
+    return {"group_names": group_names}

@@ -340,40 +340,54 @@ async def start_timer(request_data: StartTimerRequest):
     user_id = request_data.id
     date = request_data.date
 
-
+    existing_timer_data = collection_Timer.find_one(
+        {"id": user_id, "dates.date": date}
+    )
     # Update the isStudy status and recent timestamp
-    update_result = collection_Timer.update_one(
-        {"id": user_id},
-        {
-            "$set": {
+    if not existing_timer_data:
+        collection_Timer.update_one(
+            {"id": user_id},
+            {
+                "$addToSet": {
+            "dates": {
+            "date": date,
+            "duration": 0
+            }
+            },
+                "$set": {
                 "isStudy": True,
                 "recent": datetime.utcnow()
             }
-        }
-    )
+        },
+        upsert=True
+        )
+
+        # If the date already exists, just update 'isStudy' and 'recent'
+    else:
+        collection_Timer.update_one(
+                {"id": user_id},
+                {
+                    "$set": {
+                        "isStudy": True,
+                        "recent": datetime.utcnow()
+                    }
+                }
+            )
 
     # Check if the update was successful
-    if update_result.modified_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No timer found for user ID {user_id}."
-        )
-
-    # Retrieve the duration for the set date
-    timer_data = collection_Timer.find_one(
-        {"id": user_id, "dates.date": date},
-        {"dates.$": 1}
+    updated_timer_data = collection_Timer.find_one(
+    {"id": user_id, "dates.date": date},
+    {"dates.$": 1}
     )
 
-    # Check if the date was found
-    if not timer_data or "dates" not in timer_data or len(timer_data["dates"]) == 0:
+    if not updated_timer_data or "dates" not in updated_timer_data or len(updated_timer_data["dates"]) == 0:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No duration found for user ID {user_id} on date {date}."
-        )
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"No duration found for user ID {user_id} on date {date}."
+    )
 
-    # Extract the duration for the response
-    duration = timer_data["dates"][0]["duration"]
+# Extract the duration for the response
+    duration = updated_timer_data["dates"][0]["duration"]
 
     return {"duration": duration}
 
@@ -420,7 +434,7 @@ async def stop_timer(request_data: StopTimerRequest):
         {"id": user_id},
         {
             "$set": {
-                f"dates.{date_entry_index}.duration": timer_data["dates"][date_entry_index]["duration"] + int(time_difference.total_seconds()),
+                f"dates.{date_entry_index}.duration": int(timer_data["dates"][date_entry_index]["duration"]) + int(time_difference.total_seconds()),
                 "isStudy": False,
                 "recent": datetime.utcnow()
             }
@@ -433,7 +447,7 @@ async def stop_timer(request_data: StopTimerRequest):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Failed to update timer for user ID {user_id}."
         )
-
+    
     # Return the updated duration
     updated_duration = timer_data["dates"][date_entry_index]["duration"] + int(time_difference.total_seconds())
     return {"id": user_id, "date": date, "duration": updated_duration}
