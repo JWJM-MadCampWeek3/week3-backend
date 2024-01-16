@@ -1,7 +1,7 @@
 
 
 from dotenv import load_dotenv
-from langchain_community.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate, PromptTemplate
 from langchain.callbacks import StreamingStdOutCallbackHandler
 from langchain.schema import BaseOutputParser
