@@ -16,6 +16,7 @@ import socketio
 from fastapi import FastAPI, WebSocket
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
+from src.tip import tip
 
 # FastAPI app and APIRouter initialization
 recommend = APIRouter(prefix="/recommend")
@@ -92,3 +93,17 @@ async def recommend_list(request: RecommendRequest):
         detail="No matching problems found."
         )
 
+
+class TipRequest(BaseModel):
+    problemId: int
+
+
+@recommend.post("/tip")
+def get_tip(request: TipRequest):
+    try:
+        # Call the tip function from tip.py and pass the number
+        tips = tip(request.problemId)
+        return tips
+    except Exception as e:
+        # You can log the exception here if needed
+        raise HTTPException(status_code=500, detail=str(e))
