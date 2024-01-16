@@ -53,11 +53,8 @@ async def rank_individual_day(query: GroupQuery):
     durations = []
 
     # Convert the string date to a datetime object for querying
-    # try:
-    #     query_date = datetime.strptime(query.date, '%Y-%m-%d')
-    # except ValueError:
-    #     raise HTTPException(status_code=400, detail="Date must be in YYYY-MM-DD format.")
     query_date = query.date
+
     # Loop through each member ID and collect their duration
     for member_id in member_ids:
         timer_entries_cursor = collection_Timer.find({"id": member_id, "dates.date": query_date})
@@ -65,18 +62,71 @@ async def rank_individual_day(query: GroupQuery):
         
         print(f"Member ID: {member_id}, Timer Entries: {timer_entries}")
 
+        member_duration = {
+            "id": member_id,
+            "duration": 0  # Initialize duration as 0
+        }
+
         for entry in timer_entries:
             for date_entry in entry.get('dates', []):
                 if date_entry.get('date') == query_date:
                     print(f"Found matching entry for Member ID: {member_id}, Duration: {date_entry.get('duration', 0)}")
+                    member_duration["duration"] += int(date_entry.get('duration', 0))
 
-                    durations.append({
-                        "id": member_id,
-                        "duration": date_entry.get('duration', 0)
-                    })
-                    break
+        durations.append(member_duration)
+
     # Sort the durations by the duration in descending order
     sorted_durations = sorted(durations, key=lambda x: int(x['duration']), reverse=True)
 
     return sorted_durations
 
+class MonthQuery(BaseModel):
+    group_name: str
+    date: str
+
+class MemberDurationModel(BaseModel):
+    id: str
+    duration: int
+
+@rank.post("/individual_month", response_model=list[MemberDurationModel])
+async def rank_individual_month(query: MonthQuery):
+    # Find the group by group name
+    group = await collection_Group.find_one({"group_name": query.group_name})
+    if not group:
+        raise HTTPException(status_code=404, detail=f"Group '{query.group_name}' not found.")
+
+    # Extract the list of members' IDs from the group
+    member_ids = group.get("members", [])
+
+    # Keep the string date as it is for querying (YYYY-MM format)
+    query_month = query.date
+
+    # Prepare to collect the total durations for each member
+    member_durations = []
+
+    # Loop through each member ID and collect their total duration for the specified month
+    for member_id in member_ids:
+        timer_entries_cursor = collection_Timer.find({"id": member_id})
+        timer_entries = await timer_entries_cursor.to_list(length=100)
+
+        # Initialize the total duration for the member
+        total_duration = 0
+
+        # Loop through each entry and sum the durations for the specified month
+        for entry in timer_entries:
+            for date_entry in entry.get('dates', []):
+                # Parse the date in "YYYY-MM-DD" format
+                entry_date = date_entry.get('date')
+                if entry_date.startswith(query_month):
+                    total_duration += int(date_entry.get('duration', 0))
+
+        # Append the member's total duration to the list
+        member_durations.append({
+            "id": member_id,
+            "duration": total_duration
+        })
+
+    # Sort the member durations by duration in descending order
+    sorted_durations = sorted(member_durations, key=lambda x: x['duration'], reverse=True)
+
+    return sorted_durations
