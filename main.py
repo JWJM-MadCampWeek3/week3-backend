@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List
 from typing import Optional, Any, Dict
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, status, websockets , APIRouter
+import httpx
 from pydantic import BaseModel, Field
 from pymongo import MongoClient, ReturnDocument
 from passlib.context import CryptContext
@@ -12,6 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from routers.group import group
 from routers.timer import timer
 from routers.rank import rank
+from routers.recommend import recommend
 import requests
 import socketio
 
@@ -35,6 +37,7 @@ app.add_middleware(
 app.include_router(group)
 app.include_router(timer)
 app.include_router(rank)
+app.include_router(recommend)
 # app.include_router(
 #     timer,
 #     prefix="/timer",
@@ -55,7 +58,7 @@ collection_User = db['User']
 collection_Info = db['Info']
 collection_Group = db['Group']
 collection_Timer = db['Timer']
-
+collection_Problems = db['Problems']
 
 # Models
 class LoginModel(BaseModel):
@@ -86,11 +89,67 @@ class ExistResponseModel(BaseModel):
 
 class TestModel(BaseModel):
     test : str
+@app.get('/test')
+async def test_endpoint():
+    try:
+        # Define the URL of the external API
+        url = 'https://solved.ac/api/v3/user/top_100?handle=yongseong97'
 
-@app.post('/test', response_model=ExistResponseModel)
-async def test(str: TestModel):
-    CLIENT = os.environ.get("CLIENT")
-    print("Connecting to MongoDB with URI:", CLIENT) 
+        # Make a GET request to the external API
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+
+        # Check if the response status code is 200 (OK)
+        if response.status_code == 200:
+            # Parse the JSON response
+            data = response.json()
+            
+            # Extract relevant fields from each item in the 'items' list
+            parsed_data = []
+            for item in data['items']:
+                problem_id = item['problemId']
+                title_ko = item['titleKo']
+                level = item['level']
+                key = item['tags'][0]['key'] if item['tags'] else None
+                
+                parsed_data.append({
+                    'problemId': problem_id,
+                    'titleKo': title_ko,
+                    'level': level,
+                    'key': key
+                })
+                for item in parsed_data:
+                    problem_id = item['problemId']
+            
+            # Check if a document with the same problemId exists in collection_Problems
+                existing_problem = collection_Problems.find_one({'problemId': problem_id})
+            
+                if not existing_problem:
+                # If it doesn't exist, insert the new document
+                    collection_Problems.insert_one(item)
+                else:
+                # If it already exists, update the existing document (optional)
+                # You can choose to update or skip duplicates as needed
+                # Here, we are updating the 'key' field of the existing document
+                    collection_Problems.update_one(
+                    {'problemId': problem_id},
+                    {'$set': {'key': item['key']}}
+                )
+
+            return parsed_data  # Return the parsed data as a list of dictionaries
+        else:
+            # Raise an HTTPException with the appropriate status code and error message
+            raise HTTPException(status_code=response.status_code, detail="External API request failed")
+
+    except httpx.RequestError as e:
+        # Handle any network-related errors here
+        raise HTTPException(status_code=500, detail="Network error occurred")
+
+
+# @app.post('/test', response_model=ExistResponseModel)
+# async def test(str: TestModel):
+#     CLIENT = os.environ.get("CLIENT")
+#     print("Connecting to MongoDB with URI:", CLIENT) 
 
 @app.post('/signup_bj_id', response_model=ExistResponseModel)
 async def check_bj_id(bj_id_data: BJIDModel):

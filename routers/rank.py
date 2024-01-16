@@ -77,6 +77,8 @@ async def rank_individual_day(query: GroupQuery):
         member_duration["nickname"] = member_info.get("nickname", "Unknown") if member_info else "Unknown"
         member_duration["bj_id"] = member_info.get("bj_id", "Unknown") if member_info else "Unknown"
         member_duration["solvedCount"] = member_info.get("solvedCount", "Unknown") if member_info else "Unknown"
+        member_duration["tier"] = member_info.get("tier", "Unknown") if member_info else "Unknown"
+
 
 
 
@@ -102,6 +104,7 @@ class MemberDurationModel(BaseModel):
     bj_id : str
     solvedCount : int
     duration: int
+    tier : int
 
 
 @rank.post("/individual_month", response_model=list[MemberDurationModel])
@@ -151,6 +154,8 @@ async def rank_individual_month(query: MonthQuery):
         member_duration["nickname"] = member_info.get("nickname", "Unknown") if member_info else "Unknown"
         member_duration["bj_id"] = member_info.get("bj_id", "Unknown") if member_info else "Unknown"
         member_duration["solvedCount"] = member_info.get("solvedCount", "Unknown") if member_info else "Unknown"
+        member_duration["tier"] = member_info.get("tier", "Unknown") if member_info else "Unknown"
+
 
 
         # member_durations.append({
