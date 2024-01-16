@@ -1,6 +1,7 @@
+import datetime
 from typing import List
 from typing import Optional, Any, Dict
-from fastapi import Body, FastAPI, HTTPException, Request, Response, status, websockets , APIRouter
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, status, websockets , APIRouter
 from pydantic import BaseModel, Field
 from pymongo import MongoClient, ReturnDocument
 from passlib.context import CryptContext
@@ -8,19 +9,36 @@ import os
 from fastapi.middleware.cors import CORSMiddleware 
 from bson import ObjectId
 from fastapi.encoders import jsonable_encoder
-
+from routers.group import group
+from routers.timer import timer
 import requests
+import socketio
 
+# sio = socketio.AsyncServer(async_mode='asgi')
 app = FastAPI()
 
+# app.mount('/timer', timer_socket_app)
+# socket_app = socketio.ASGIApp(sio)
+
+
+# app.mount('/',socket_app)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"], 
     allow_headers=["*"],
 )
+
+app.include_router(group)
+app.include_router(timer)
+# app.include_router(
+#     timer,
+#     prefix="/timer",
+#     tags=["timer"],
+#     responses={404: {"description": "Not found"}},
+# )
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -34,6 +52,8 @@ db = client['MadCampWeek3']
 collection_User = db['User']
 collection_Info = db['Info']
 collection_Group = db['Group']
+collection_Timer = db['Timer']
+
 
 # Models
 class LoginModel(BaseModel):
@@ -61,6 +81,14 @@ class BJIDModel(BaseModel):
 
 class ExistResponseModel(BaseModel):
     exist: bool
+
+class TestModel(BaseModel):
+    test : str
+
+@app.post('/test', response_model=ExistResponseModel)
+async def test(str: TestModel):
+    CLIENT = os.environ.get("CLIENT")
+    print("Connecting to MongoDB with URI:", CLIENT) 
 
 @app.post('/signup_bj_id', response_model=ExistResponseModel)
 async def check_bj_id(bj_id_data: BJIDModel):
@@ -107,6 +135,15 @@ async def signup(signup_data: SignupModel):
 
     # Insert user data into User collection
     collection_User.insert_one(user_data)
+
+    timer_data = {
+    "id": signup_data.id,
+    "isStudy" : False,
+    "recent" : None,
+    "total" : 0,
+    "dates": []  
+    }
+    collection_Timer.insert_one(timer_data)
 
     # Fetch additional user information from the external API
     response = requests.get(f'https://solved.ac/api/v3/user/show?handle={signup_data.bj_id}')
@@ -215,31 +252,6 @@ class MemberInfoModel(BaseModel):
 class GroupResponseModel(BaseModel):
     members: List[MemberInfoModel]
 
-# Endpoint to get and return group information
-@app.post('/group_member', response_model=GroupResponseModel)
-async def get_group_info(group_request: GroupRequestModel):
-    group_data = collection_Group.find_one({"group_name": group_request.group_name})
-    if not group_data:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-
-    member_infos = []
-    for member_nickname in group_data.get('members', []):
-        member_info = collection_Info.find_one({"nickname": member_nickname})
-        if member_info:
-            member_infos.append(
-                MemberInfoModel(
-                    nickname=member_info['nickname'],
-                    bj_id=member_info['bj_id'],
-                    profileImageUrl=member_info.get('profileImageUrl', ''),
-                    solvedCount=str(member_info.get('solvedCount', 0)),
-                    rank=member_info.get('rank', 0),
-                    rating=member_info.get('rating', 0),
-                )
-            )
-    
-    return GroupResponseModel(members=member_infos)
-
-
 
 
 class UserIdModel(BaseModel):
@@ -293,53 +305,6 @@ async def get_full_group_info(group_name: str) -> GroupModel:
     else:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
 
-@app.post('/group/join', response_model=GroupModel)
-async def join_group(data: GroupActionModel):
-    # Find the group by name
-    group = collection_Group.find_one({"group_name": data.group_name})
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    
-    # Find the user info and check if they are already in the group
-    user_info = collection_Info.find_one({"id": data.id})
-    if not user_info:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User info not found")
-    
-    # If the user is not already in the group, add them
-    if data.group_name not in user_info.get('group', []):
-        collection_Info.update_one({"id": data.id}, {"$addToSet": {"group": data.group_name}})
-    if data.id not in group.get('members', []):
-        collection_Group.update_one(
-            {"group_name": data.group_name},
-            {"$addToSet": {"members": data.id}}
-        )
-        return await get_full_group_info(data.group_name) # Return full group info after joining
-    else:
-# User is already a member of the group, so just return the group info
-        return await get_full_group_info(data.group_name)
-
-@app.delete('/group/leave', response_model=GroupModel)
-async def leave_group(data: GroupActionModel):
-# Find the group by name
-    group = collection_Group.find_one({"group_name": data.group_name})
-    if not group:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
-    user_info = collection_Info.find_one({"id": data.id})
-    if not user_info:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User info not found")
-
-# If the user is in the group, remove them
-    if data.group_name in user_info.get('group', []):
-        collection_Info.update_one({"id": data.id}, {"$pull": {"group": data.group_name}})
-    if data.id in group.get('members', []):
-        collection_Group.update_one(
-        {"group_name": data.group_name},
-        {"$pull": {"members": data.id}}
-    )
-        return await get_full_group_info(data.group_name)  # Return full group info after leaving
-    else:
-    # User is not a member of the group, so raise an error
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not in the group")
 
 class GroupCreateModel(BaseModel):
     group_name: str
@@ -351,42 +316,7 @@ class GroupCreateModel(BaseModel):
     password: str
     group_bio: str
 
-@app.post('/group/create', response_model=SuccessModel)
-async def create_group(group_data: GroupCreateModel):
-    # Check if a group with the same name already exists
-    if collection_Group.find_one({"group_name": group_data.group_name}):
-        return SuccessModel(success=False, message="Group name already exists.")
 
-    # Hash the group password
-    hashed_password = pwd_context.hash(group_data.password)
-
-    # Prepare the new group data
-    new_group = {
-        "group_name": group_data.group_name,
-        "manager_id": group_data.manager_id,
-        "goal_time": group_data.goal_time,
-        "goal_number": group_data.goal_number,
-        "tier": group_data.tier,
-        "is_secret": group_data.is_secret,
-        "password": hashed_password,
-        "group_bio": group_data.group_bio,
-        "members": [group_data.manager_id]  # Initialize with an empty list of members
-    }
-
-    # Insert the new group into the Group collection
-    collection_Group.insert_one(new_group)
-    collection_Info.update_one(
-        {"id": group_data.manager_id},
-        {"$addToSet": {"group": group_data.group_name}}
-    )
-    
-    # Check if the update was successful
-    manager_info = collection_Info.find_one({"id": group_data.manager_id})
-    if group_data.group_name in manager_info.get("group", []):
-        return SuccessModel(success=True, message="New group created successfully and manager updated.")
-    else:
-        return SuccessModel(success=False, message="Group created but manager update failed.")
-    
 
 class GroupUpdateModel(BaseModel):
     group_name: str
@@ -396,46 +326,115 @@ class GroupUpdateModel(BaseModel):
     password: str
     group_bio: str
 
-# Endpoint to update group information
-@app.post('/group/update', response_model=SuccessModel)
-async def update_group(group_update_data: GroupUpdateModel):
-    # Find the group by group_name
-    group = collection_Group.find_one({"group_name": group_update_data.group_name})
-    if not group:
-        return SuccessModel(success=False, message="Group not found.")
+# WebSocket connection manager
+# class ConnectionManager:
+#     def __init__(self):
+#         self.active_connections = {}
 
-    # Hash the password if it's not empty
-    hashed_password = pwd_context.hash(group_update_data.password) if group_update_data.password else group.get('password')
+#     async def connect(self, websocket: WebSocket, user_id: str):
+#         await websocket.accept()
+#         self.active_connections[user_id] = websocket
 
-    # Prepare the updated group data
-    update_data = {
-        "goal_time": group_update_data.goal_time,
-        "goal_number": group_update_data.goal_number,
-        "is_secret": group_update_data.is_secret,
-        "password": hashed_password,
-        "group_bio": group_update_data.group_bio
-    }
-        
-    result = collection_Group.update_one(
-    {"group_name": group_update_data.group_name},
-    {"$set": update_data}
-    )
+#     def disconnect(self, user_id: str):
+#         if user_id in self.active_connections:
+#             del self.active_connections[user_id]
 
-    if result.matched_count == 1:
-        if result.modified_count == 0:
-            message = "No changes were made to the group."
+#     async def send_personal_message(self, message: str, user_id: str):
+#         if user_id in self.active_connections:
+#             websocket = self.active_connections[user_id]
+#             await websocket.send_text(message)
+
+# manager = ConnectionManager()
+
+# # WebSocket route for /ws
+# @app.websocket("/ws/{user_id}")
+# async def websocket_endpoint(websocket: WebSocket, user_id: str):
+#     await manager.connect(websocket, user_id)
+#     try:
+#         while True:
+#             data = await websocket.receive_text()
+#             action = data['action']
+#             # Timer action logic here
+#             # Use manager.send_personal_message to communicate back
+#     except WebSocketDisconnect:
+#         manager.disconnect(user_id)
+
+# # Timer action logic (modified for WebSocket)
+# async def timer_action(user_id, action):
+#     if action == 'start':
+#         # Start timer logic
+#         await manager.send_personal_message('Timer started', user_id)
+#     elif action == 'stop':
+#         # Stop timer logic
+#         await manager.send_personal_message('Timer stopped', user_id)
+
+
+
+timer_sio = socketio.AsyncServer(cors_allowed_origins="*", async_mode = 'asgi') 
+timer_socket_app = socketio.ASGIApp(timer_sio)
+app.mount("/socket.io", timer_socket_app)
+
+# Define Socket.IO event handlers
+@timer_sio.event
+async def connect(sid, environ):
+    print("Client connected", sid)
+
+@timer_sio.event
+async def disconnect(sid):
+    print("Client disconnected", sid)
+
+@timer_sio.event
+async def timer_action(sid, data):
+    user_id = data['id']
+    action = data['action']
+
+    if action == 'start':
+        await collection_Timer.update_one(
+            {"id": user_id},
+            {"$set": {"isStudy": True, "recent": datetime.utcnow()}}
+        )
+        await timer_sio.emit('timer_started', {'id': user_id}, to=sid)
+
+    elif action == 'stop':
+        timer_data = await collection_Timer.find_one({"id": user_id})
+        if timer_data:
+            previous_recent = timer_data.get("recent", datetime.utcnow())
+            existing_duration = timer_data.get("duration", 0)  # Get the existing duration
         else:
-            message = "Group updated successfully."
-        return SuccessModel(success=True, message=message)
-    else:
-        return SuccessModel(success=False, message="Update failed.")
-    
-@app.post('/group_info', response_model=GroupModel)
-async def get_group_info(group_name: str = Body(..., embed=True)):
-    group_document = collection_Group.find_one({"group_name": group_name})
-    if group_document:
-        group_document.pop('_id')  # Remove the MongoDB generated ID
-        group_document.pop('password', None)  # Do not return the password
-        return GroupModel(**group_document)
-    else:
-        raise HTTPException(status_code=404, detail="Group not found")
+            previous_recent = datetime.utcnow()
+            existing_duration = 0  # Default to 0 if no timer data found
+
+        # Calculate the time difference
+        time_difference = datetime.utcnow() - previous_recent
+
+        # Add the time difference to the existing duration
+        new_duration = existing_duration + time_difference.total_seconds()
+
+        # Update the user's 'isStudy' status and duration
+        await collection_Timer.update_one(
+            {"id": user_id},
+            {
+                "$set": {
+                    "isStudy": False,
+                    "recent": datetime.utcnow(),
+                    "duration": new_duration  # Update duration with the new calculated value
+                }
+            }
+        )
+        await timer_sio.emit('timer_stopped', {'id': user_id}, to=sid)
+
+
+
+
+
+
+
+# Create WebSocket route for /timer
+# @app.websocket("/ws")
+# async def websocket_endpoint(websocket: WebSocket):
+#     await websocket.accept()
+#     while True:
+#         data = await websocket.receive_text()
+#         await websocket.send_text(f"Message text was: {data}")
+
+
