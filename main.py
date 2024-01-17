@@ -453,15 +453,72 @@ async def start_timer(request_data: StartTimerRequest):
 
 class StopTimerRequest(BaseModel):
     id: str
-    date: str  # Assuming you want to use this date to
+    date: str 
+    duration : int # Assuming you want to use this date to
 
+# @app.post("/stop")
+# async def stop_timer(request_data: StopTimerRequest):
+#     user_id = request_data.id
+#     date = request_data.date
+
+    
+#     # Retrieve the current timer data
+#     timer_data = collection_Timer.find_one(
+#         {"id": user_id, "dates.date": date}
+#     )
+
+#     if not timer_data:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail=f"No timer found for user ID {user_id}."
+#         )
+
+#     # Find the index of the date entry to update
+#     date_entry_index = next(
+#         (index for (index, d) in enumerate
+#     (timer_data["dates"]) if d["date"] == date), None)
+
+#     # If there's no matching date entry, raise an exception
+#     if date_entry_index is None:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail=f"No duration entry found for user ID {user_id} on date {date}."
+#         )
+
+#     # Calculate the time difference
+#     previous_recent = timer_data["recent"] if "recent" in timer_data else datetime.utcnow()
+#     time_difference = datetime.utcnow() - previous_recent
+
+#     # Update the user's 'isStudy' status, the 'recent' timestamp, and increment the duration
+#     update_result = collection_Timer.update_one(
+#         {"id": user_id},
+#         {
+#             "$set": {
+#                 f"dates.{date_entry_index}.duration": int(timer_data["dates"][date_entry_index]["duration"]) + int(time_difference.total_seconds()),
+#                 "isStudy": False,
+#                 "recent": datetime.utcnow()
+#             }
+#         }
+#     )
+
+#     # Check if the update was successful
+#     if update_result.modified_count == 0:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail=f"Failed to update timer for user ID {user_id}."
+#         )
+    
+#     # Return the updated duration
+#     updated_duration = timer_data["dates"][date_entry_index]["duration"] + int(time_difference.total_seconds())
+    
+#     return {"id": user_id, "date": date, "duration": updated_duration}
 @app.post("/stop")
 async def stop_timer(request_data: StopTimerRequest):
     user_id = request_data.id
     date = request_data.date
+    new_duration = request_data.duration  # Duration received from the POST request
 
-    
-    # Retrieve the current timer data
+    # Check if the timer data exists for the given user ID and date
     timer_data = collection_Timer.find_one(
         {"id": user_id, "dates.date": date}
     )
@@ -474,42 +531,35 @@ async def stop_timer(request_data: StopTimerRequest):
 
     # Find the index of the date entry to update
     date_entry_index = next(
-        (index for (index, d) in enumerate
-    (timer_data["dates"]) if d["date"] == date), None)
+        (index for (index, d) in enumerate(timer_data["dates"]) if d["date"] == date), None
+    )
 
-    # If there's no matching date entry, raise an exception
     if date_entry_index is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No duration entry found for user ID {user_id} on date {date}."
+            detail=f"No date entry found for user ID {user_id} on date {date}."
         )
 
-    # Calculate the time difference
-    previous_recent = timer_data["recent"] if "recent" in timer_data else datetime.utcnow()
-    time_difference = datetime.utcnow() - previous_recent
-
-    # Update the user's 'isStudy' status, the 'recent' timestamp, and increment the duration
+    # Update the duration directly with the new_duration received
     update_result = collection_Timer.update_one(
         {"id": user_id},
         {
             "$set": {
-                f"dates.{date_entry_index}.duration": int(timer_data["dates"][date_entry_index]["duration"]) + int(time_difference.total_seconds()),
+                f"dates.{date_entry_index}.duration": new_duration,
                 "isStudy": False,
                 "recent": datetime.utcnow()
             }
         }
     )
 
-    # Check if the update was successful
     if update_result.modified_count == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Failed to update timer for user ID {user_id}."
         )
-    
+
     # Return the updated duration
-    updated_duration = timer_data["dates"][date_entry_index]["duration"] + int(time_difference.total_seconds())
-    return {"id": user_id, "date": date, "duration": updated_duration}
+    return {"id": user_id, "date": date, "duration": new_duration}
 
 class Problem(BaseModel):
     id: str
@@ -552,3 +602,87 @@ async def delete_problem_from_user(problem_data: Problem):
     else:
         # If the user does not exist, raise an error.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+@app.post("/user/todoproblem/insert")
+async def add_problem_to_user(problem: Problem):
+    user_id = problem.id
+    user_problem = problem.problem
+
+    # Check if the user exists in the collection.
+    user = collection_Info.find_one({"id": user_id})
+    if user:
+        # Check if the problem already exists for the user.
+        if user_problem not in user.get('todo_problems', []):
+            collection_Info.update_one({"id": user_id}, {"$push": {"todo_problems": user_problem}})
+            return {"message": "Problem added to the user."}
+        else:
+            raise HTTPException(status_code=400, detail="Problem already exists for the user.")
+    else:
+        # If the user does not exist, create a new entry.
+        await collection_Info.insert_one({"id": user_id, "todo_problems": [user_problem]})
+        return {"message": "User created and problem added."}
+    
+@app.delete("/user/todoproblem/delete")
+async def delete_problem_from_user(problem_data: Problem):
+    user_id = problem_data.id
+    problem_to_delete = problem_data.problem
+
+    # Check if the user exists in the collection.
+    user = collection_Info.find_one({"id": user_id})
+    if user:
+        # Check if the problem exists in the user's problems.
+        if problem_to_delete in user.get('todo_problems', []):
+            collection_Info.update_one({"id": user_id}, {"$pull": {"todo_problems": problem_to_delete}})
+            return {"message": "Problem deleted from the user."}
+        else:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Problem not found in the user.")
+    else:
+        # If the user does not exist, raise an error.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+
+@app.get('/problem/{problemId}')
+async def getProblemInfo(problemId : str):
+
+    try:
+        # Correctly format the URL with the problemId
+        url = f'https://solved.ac/api/v3/problem/show?problemId={problemId}'
+
+        # Make a GET request to the external API
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+
+        # Check if the response status code is 200 (OK)
+        if response.status_code == 200:
+            # Parse the JSON response
+            data = response.json()
+            
+            # Extract relevant fields directly from the data
+            problem_id = data['problemId']
+            title_ko = data['titleKo']
+            level = data['level']
+            key = data['tags'][0]['key'] if data['tags'] else None
+                
+            problem_data = {
+                'problemId': problem_id,
+                'titleKo': title_ko,
+                'level': level,
+                'key': key
+            }
+            
+            # Check if a document with the same problemId exists in the collection_Problems
+            existing_problem = collection_Problems.find_one({'problemId': problem_id})
+            
+            if not existing_problem:
+                # If it doesn't exist, insert the new document
+                collection_Problems.insert_one(problem_data)
+            
+            # Return the problem data as a dictionary
+            return problem_data
+        else:
+            # If the response status code is not 200, raise an HTTPException
+            raise HTTPException(status_code=response.status_code, detail="External API request failed")
+    
+    except httpx.RequestError as e:
+        # Handle any network-related errors here
+        raise HTTPException(status_code=500, detail=str(e))
